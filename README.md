@@ -14,3 +14,5 @@ The backend uses **FastAPI + SQLite**, and the frontend uses **React + TailwindC
 - 👥 **Built-in Auth API** – FastAPI endpoints for signup/login using SQLite.
 - ✅ **Task Management API** – Simple task CRUD for demonstration.
 - 🎨 **TailwindCSS Design** – All pages styled using TailwindCSS from CDN.
+
+### 🛠️ Setup Instructions
