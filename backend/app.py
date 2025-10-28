@@ -13,6 +13,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from fastapi import Form
 import re
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load environment variables from .env
+load_dotenv()
 
 # ----------------- DATABASE -----------------
 DATABASE_URL = "sqlite:///./data.db"
@@ -48,8 +53,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize OpenAI
-client = OpenAI(api_key="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")
+# Initialize client using key from environment
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# print(f"api key:{client}")
 
 # Directory for generated projects
 GENERATED_DIR = Path("generated_projects")
@@ -75,82 +81,119 @@ async def generate_project(request: Request):
             print(" -", f.name)
         
         
-        # ---- AI Generation ----
+       
+               # ---- AI Generation (JSON output enforced) ----
         system_prompt = """
-        You are an expert full-stack web developer.
+        You are an expert full-stack web developer and a code-generation assistant.
 
-        Your job: Generate a complete multi-page website using TailwindCSS and Vanilla JS.
-
-        Rules:
-        - Return HTML for multiple pages.
-        - Each page must start with this exact line:
-        ===PAGE: filename.html===
-        - After that line, include full <html> code for that page.
-        - Pages to include: index.html, login.html, signup.html, about.html, tasks.html.
-        - Use TailwindCSS from CDN for modern, beautiful UI.
-        - Do NOT include markdown, explanations, or code fences.
+        Your job: produce a multi-page website as a JSON object only. STRICT RULES:
+        1) Output MUST be valid JSON and nothing else (no markdown, no explanation text).
+        2) The top-level JSON must be an object with a key "files" that is an array of objects.
+           Each file object must have: "path" (string, e.g. "index.html" or "assets/style.css")
+           and "content" (string) containing the full file contents (HTML/CSS/JS).
+        3) Include at least the following files (complete HTML with <!DOCTYPE html>):
+           "index.html", "login.html", "signup.html", "about.html", "tasks.html".
+        4) Use TailwindCSS from CDN where appropriate.
+        5) Use relative links inside HTML (e.g., <a href="login.html">).
+        6) Do NOT include any keys other than "files" at top-level.
+        7) Keep JSON compact (but valid). If content contains characters that require escaping, ensure JSON remains valid.
         """
 
         user_prompt = f"""
-        Build a project based on this description: "{description}"
+        Build a project based on this description: {json.dumps(description)}
 
-        Include all pages as instructed above.
+        Return a JSON object that matches the rules above. Example shape:
+        {{
+          "files": [
+            {{ "path": "index.html", "content": "<!DOCTYPE html>... entire html ..." }},
+            {{ "path": "login.html", "content": "<!DOCTYPE html>... entire html ..." }},
+            ...
+          ]
+        }}
         """
 
+        # Call the model (enforce deterministic low-temp)
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
-            ]
+            ],
+            
         )
 
-        html_code = completion.choices[0].message.content.strip()
+        raw = completion.choices[0].message.content.strip()
 
-        
-        # Remove unwanted Markdown/code-block markers if present
-        html_code = html_code.replace("```html", "").replace("```", "")
-        html_code = html_code.split("###")[0]  # Remove any explanations accidentally included
+        # ---- Robust JSON extraction & parsing ----
+        def extract_json(s: str):
+            """
+            Try to parse JSON directly. If it fails, attempt to find the largest JSON object substring.
+            Returns parsed object or raises ValueError.
+            """
+            try:
+                return json.loads(s)
+            except Exception:
+                # attempt to locate a {...} block with balanced braces (simple heuristic)
+                # find the first '{' and last '}' and try to load progressively
+                first = s.find("{")
+                last = s.rfind("}")
+                if first == -1 or last == -1 or last <= first:
+                    raise ValueError("No JSON object found in model output.")
+                candidate = s[first:last+1]
+                # attempt incremental trimming of trailing invalid chars
+                while candidate:
+                    try:
+                        return json.loads(candidate)
+                    except Exception:
+                        # chop off a small tail and try again
+                        candidate = candidate[:-1]
+                raise ValueError("Failed to extract valid JSON from model output.")
 
+        try:
+            parsed = extract_json(raw)
+        except ValueError as e:
+            # helpful debug info in logs and return an error to client
+            print("MODEL OUTPUT (preview):", raw[:1000])
+            raise RuntimeError("Failed to parse JSON from model output: " + str(e))
 
-        if "<!DOCTYPE html>" in html_code:
-            # --- Extract multiple pages if LLM used "PAGE:" markers ---
-            matches = re.findall(
-                r"=+\s*PAGE:\s*(.*?)=+\s*(<!DOCTYPE html[\s\S]*?)(?==+\s*PAGE:|$)",
-                html_code
-            )
+        # Validate structure
+        if not isinstance(parsed, dict) or "files" not in parsed or not isinstance(parsed["files"], list):
+            print("Parsed JSON doesn't contain expected 'files' array. Preview:", str(parsed)[:1000])
+            raise RuntimeError("Model output JSON must contain a 'files' array.")
 
-            if matches:
-                for filename, content in matches:
-                    filename = filename.strip()
-                    if not filename.endswith(".html"):
-                        filename += ".html"
-
-                    # Inject base tag so links work
-                    base_tag = f'<base href="/generated_projects/{project_id}/" />'
-                    if "<head>" in content:
-                        content = content.replace("<head>", f"<head>{base_tag}")
-                    else:
-                        content = f"<head>{base_tag}</head>{content}"
-
-                    (project_folder / filename).write_text(content.strip(), encoding="utf-8")
-            else:
-                # --- Auto-split single-page HTML into sections like login, signup, etc. ---
-                sections = re.split(r"<!--\s*(PAGE|Section):\s*(.*?)\s*-->", html_code)
-                if len(sections) > 1:
-                    for i in range(1, len(sections), 3):
-                        page_name = sections[i+1].strip().replace(" ", "_").lower()
-                        page_html = sections[i+2]
-                        filename = f"{page_name}.html"
-                        (project_folder / filename).write_text(page_html.strip(), encoding="utf-8")
+        # Write files to project folder
+        for fileobj in parsed["files"]:
+            if not isinstance(fileobj, dict) or "path" not in fileobj or "content" not in fileobj:
+                continue
+            rel_path = fileobj["path"].strip()
+            # sanitize path: prevent directory traversal
+            rel_path = rel_path.replace("..", "").lstrip("/")
+            target = project_folder / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            content = fileobj["content"]
+            # Inject base tag into HTML files so relative links work in iframe/preview
+            if rel_path.endswith(".html"):
+                # ensure the document has <head>
+                base_tag = f'<base href="/generated_projects/{project_id}/" />'
+                if "<head" in content.lower():
+                    # replace first occurrence of <head.*?> with <head> + base_tag after tag
+                    content = re.sub(r"(?i)(<head[^>]*>)", r"\1" + base_tag, content, count=1)
                 else:
-                    (project_folder / "index.html").write_text(html_code, encoding="utf-8")
-        else:
-            (project_folder / "index.html").write_text(html_code, encoding="utf-8")
+                    # prepend head with base
+                    content = f"<head>{base_tag}</head>\n" + content
+            target.write_text(content, encoding="utf-8")
 
+        # Ensure index.html exists (fallback to first HTML file if not provided)
+        if not (project_folder / "index.html").exists():
+            # find first .html in folder
+            for p in sorted(project_folder.rglob("*.html")):
+                (project_folder / "index.html").write_text(p.read_text(), encoding="utf-8")
+                break
 
-
-
+       
+       
+    
+       
 
         # Save index.html
         # html_file = project_folder / "index_preview.html"
