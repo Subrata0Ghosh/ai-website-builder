@@ -5,7 +5,6 @@ It also includes user authentication (signup/login), task management, and automa
 
 ---
 
-
 ## 🖼️ Screenshots
 
 ### 🔹 Main Pages
@@ -29,13 +28,11 @@ It also includes user authentication (signup/login), task management, and automa
 ---
 
 
-
 ## ▶️ Demo Video
 
-[![Watch the video](https://img.youtube.com/vi/YOUR_VIDEO_ID_HERE/0.jpg)](https://www.youtube.com/watch?v=YOUR_VIDEO_ID_HERE)
+[![Watch the demo](https://img.youtube.com/vi/-OBv_LPE2B0/0.jpg)](https://youtu.be/-OBv_LPE2B0)
 
-> 🎥 *Click the thumbnail above to watch the full demo on YouTube.*
->
+> 🎥 *Click the thumbnail above to watch the full walkthrough on YouTube.*
 
 ---
 
@@ -221,7 +218,6 @@ git push -u origin main
 * Database-based project history
 
 ---
-
 
 ## 🪄 License
 
